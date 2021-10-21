@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ゼロからはじめるAzure Maps</title>
+
+    <meta charset="utf-8" />
+    <meta http-equiv="x-ua-compatible" content="IE=Edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+
+    <!-- Azure Maps Web SDKの読み込み -->
+    <link rel="stylesheet" href="https://atlas.microsoft.com/sdk/javascript/mapcontrol/2/atlas.min.css" type="text/css" />
+    <script src="https://atlas.microsoft.com/sdk/javascript/mapcontrol/2/atlas.min.js"></script>
+
+    <!-- Azure Mapsサービスモジュールの読み込み -->
+    <script src="https://atlas.microsoft.com/sdk/javascript/service/2/atlas-service.min.js"></script>
+
+    <script>
+        // 地図インスタンス
+        let map;
+        // データソースインスタンス
+        let datasource;
+        // ポップアップ用のインスタンス
+        let popup;
+        
+        // 検索キーワードを入力する要素のDOM
+        let searchInput;
+        // 検索結果を表示する要素のDOM
+        let resultsPanel;
+
+        function initMap() {
+            
+            // Azure Maps Web SDKの初期化
+            map = new atlas.Map('myMap', {
+
+                center: [-122.33, 47.6],
+                zoom: 14,
+                view: 'Auto',
+
+                // Azure Mapsアカウントの認証情報の設定
+                authOptions: {
+                    authType: 'subscriptionKey',
+                    subscriptionKey: '<Azure Mapsアカウントの主キー>'
+                }
+            });
+
+            // 検索キーワード入力領域のDOMを取得する
+            searchInput = document.getElementById("search-input");
+            // 検索キーワード入力領域への文字入力を監視する
+            searchInput.addEventListener("input", updateSearchInputValue);
+
+            // 検索結果を表示するDOMを取得する
+            resultsPanel = document.getElementById("results-panel");
+
+            // ポップアップ用のインスタンスを作成
+            popup = new atlas.Popup();
+
+            // 地図レンダリングの完了を待つイベントハンドラーの追加
+            map.events.add('ready', function () {
+
+                //Add the zoom control to the map.
+                map.controls.add(new atlas.control.ZoomControl(), {
+                    position: 'top-right'
+                });
+
+                // データソースを作成し、地図オブジェクトに追加
+                datasource = new atlas.source.DataSource();
+                map.sources.add(datasource);
+
+                // 記号レイヤーを作成して、データソースと関連付ける
+                let searchLayer = new atlas.layer.SymbolLayer(datasource, null, {
+                    iconOptions: {
+                        image: 'marker-darkblue',
+                        anchor: 'top',
+                        allowOverlap: true
+                    }
+                });
+
+                // 記号レイヤーを地図に追加
+                map.layers.add(searchLayer);
+
+                // マウスカーソルがピン上に重なった時にポップアップを表示する
+                map.events.add('mouseover', searchLayer, function (e) {
+                    if (e.shapes && e.shapes.length > 0) {
+                        showPopup(e.shapes[0]);
+                    }
+                });
+            });
+        }
+
+        function updateSearchInputValue(e) {
+            // 入力時点の値を保持する
+            let inputValue = e.target.value;
+
+            if (inputValue.length >= 3) {
+                setTimeout(async function () {
+                    // 入力時の値と現在の値(setTimeoutで待機した後の値)が一致したら検索する
+                    if (inputValue === e.target.value) {
+                        await search();
+                    }
+                }, 500);
+            } else {
+                resultsPanel.innerHTML = '';
+            }
+        }
+
+        async function search() {
+            // 表示中の検索結果をクリアする
+            datasource.clear();
+            popup.close();
+            resultsPanel.innerHTML = '';
+
+            // 認証情報を内包したパイプラインインスタンスの作成
+            let pipeline = atlas.service.MapsURL.newPipeline(new atlas.service.MapControlCredential(map));
+
+            // Azure MapsのSearch Serviceを操作するためのインスタンスの作成
+            let searchURL = new atlas.service.SearchURL(pipeline);
+
+            // 検索キーワードの設定
+            let query = searchInput.value;
+
+            // 検索の実行（あいまい検索）
+            let results = await searchURL.searchPOI(atlas.service.Aborter.timeout(10000), query, {
+                lon: map.getCamera().center[0],
+                lat: map.getCamera().center[1],
+                radius: 9000
+            });
+
+            // 検索結果をデータソースへ追加
+            let data = results.geojson.getFeatures();
+            datasource.add(data);
+
+            // 検索結果に応じて地図の表示位置を調整
+            map.setCamera({
+                bounds: data.bbox
+            });
+
+            createResultsPanel(data);
+        }
+
+        function createResultsPanel(data) {
+            let html = [];
+            for (let i = 0; i < data.features.length; i++) {
+                let r = data.features[i];
+                html.push(`<li onclick="itemClicked('${r.id}')" onmouseover="itemHovered('${r.id}')">`);
+
+                // 地点の名称（または住所）
+                html.push(`<div class="title">`);
+                if (r.properties.poi && r.properties.poi.name) {
+                    html.push(r.properties.poi.name);
+                } else {
+                    html.push(r.properties.address.freeformAddress);
+                }
+                html.push(`</div>`);
+
+                // 住所
+                html.push(`<div class="info">${r.properties.type}: ${r.properties.address.freeformAddress}</div>`);
+
+                // 電話番号・ホームページ
+                if (r.properties.poi) {
+                    if (r.properties.phone) {
+                        html.push(`<div class="info">phone: ${r.properties.poi.phone}</div>`);
+                    }
+                    if (r.properties.poi.url) {
+                        html.push(`<div class="info"><a href="http://${r.properties.poi.url}">http://${r.properties.poi.url}</a></div>`);
+                    }
+                }
+                html.push(`</li>`);
+
+                resultsPanel.innerHTML = html.join('');
+            }
+        }
+
+        function itemHovered(id) {
+            var shape = datasource.getShapeById(id);
+            // ポップアップを表示する
+            showPopup(shape);
+        }
+
+        function itemClicked(id) {
+            var shape = datasource.getShapeById(id);
+            // クリックした地点が中央となるようにカメラを移動する
+            map.setCamera({
+                center: shape.getCoordinates(),
+                zoom: 17
+            });
+        }
+
+        function showPopup(shape) {
+            // データソースからピンの詳細情報を取得する
+            let prop = shape.getProperties();
+            let position = shape.getCoordinates();
+
+            // ポップアップ用のHTMLを構築
+            let html = `
+                        <div style="padding:5px">
+                            <div><b>${prop.poi.name}</b></div>
+                            <div>${prop.address.freeformAddress}</div>
+                            <div>${position[1]}, ${position[0]}</div>
+                        </div>`;
+
+            // ポップアップのセットアップ
+            popup.setPopupOptions({
+                content: html,
+                position: position
+            });
+
+            // ポップアップを画面に表示する
+            popup.open(map);
+        }
+    </script>
+
+    <!-- 地図描画用のスタイル定義 -->
+    <style>
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            padding: 0;
+            margin: 0;
+        }
+
+        #myMap {
+            width: 100%;
+            height: 100%;
+        }
+
+        #search {
+            position: absolute;
+            left: 0px;
+            top: 0px;
+            width: 400px;
+            box-shadow: 0px 24px 74px 0px rgba(0, 0, 0, .32);
+            border: 1px solid #ccc;
+            overflow-y: hidden;
+        }
+            #search > .search-input-box {
+                background: #fff;
+                height: 72px;
+                width: 100%;
+            }
+                #search > .search-input-box > .search-input-group {
+                    position: relative;
+                    top: 20px;
+                    left: 20px;
+                    width: 358px;
+                    height: 30px;
+                    margin: 0;
+                    padding: 0;
+                    border: 1px dotted #ccc;
+                }
+                    #search > .search-input-box > .search-input-group > .search-icon {
+                        margin: 0;
+                        padding: 0;
+                        background-size: 20px 20px;
+                        width: 30px;
+                        height: 30px;
+                        background-position: center;
+                        background-repeat: no-repeat;
+                        background-image: url("data:image/svg+xml,%3Csvg id='Layer_1' data-name='Layer 1' xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctitle%3E-%3C/title%3E%3Cpath d='M10.5,0a5.4457,5.4457,0,0,1,2.7734.75A5.6134,5.6134,0,0,1,15.25,2.7266a5.5224,5.5224,0,0,1,.5547,4.2344A5.4147,5.4147,0,0,1,15.25,8.2734,5.6134,5.6134,0,0,1,13.2734,10.25a5.5014,5.5014,0,0,1-4.6445.4219,5.6256,5.6256,0,0,1-1.6445-.9453L.8516,15.8516A.4807.4807,0,0,1,.5,16a.4823.4823,0,0,1-.3516-.1484.4905.4905,0,0,1,0-.7031l6.125-6.1328a5.6194,5.6194,0,0,1-.9453-1.6445A5.39,5.39,0,0,1,5,5.5a5.4457,5.4457,0,0,1,.75-2.7734A5.6134,5.6134,0,0,1,7.7266.75,5.4457,5.4457,0,0,1,10.5,0Zm0,10a4.347,4.347,0,0,0,1.75-.3555A4.5254,4.5254,0,0,0,14.6445,7.25,4.347,4.347,0,0,0,15,5.5a4.347,4.347,0,0,0-.3555-1.75A4.5254,4.5254,0,0,0,12.25,1.3555a4.4854,4.4854,0,0,0-3.5,0A4.5254,4.5254,0,0,0,6.3555,3.75a4.4854,4.4854,0,0,0,0,3.5A4.5254,4.5254,0,0,0,8.75,9.6445,4.3487,4.3487,0,0,0,10.5,10Z' fill='%234b4b4b'/%3E%3C/svg%3E");
+                    }
+                    #search > .search-input-box > .search-input-group > input {
+                        display: inline-block;
+                        position: absolute;
+                        top: 0px;
+                        left: 30px;
+                        width: calc(100% - 40px);
+                        height: 100%;
+                        margin: 0;
+                        padding: 0 5px;
+                        border-collapse: collapse;
+                        border: 0px;
+                    }
+                        #search > .search-input-box > .search-input-group > input:focus {
+                            outline: none;
+                        }
+
+        #results-panel {
+            width: 100%;
+            margin: 0;
+            padding: 0;
+            background-color: #fff;
+            list-style: none;
+            overflow-y: auto;
+            max-height: calc(100vh - 119px);
+        }
+            #results-panel > li {
+                border-top: 1px dotted #ccc;
+                padding: 10px 20px;
+            }
+                #results-panel > li:hover {
+                    background-color: #f1f2f2;
+                    cursor: pointer;
+                }
+                #results-panel > li > .title {
+                    font-family: segoeui-b;
+                    line-height: 14pt;
+                    width: 100%;
+                    white-space: nowrap;
+                    text-overflow: ellipsis;
+                    overflow: hidden;
+                }
+                #results-panel > li > .info {
+                    width: 100%;
+                    line-height: 14pt;
+                    white-space: nowrap;
+                    text-overflow: ellipsis;
+                    overflow: hidden;
+                }
+    </style>
+</head>
+
+<body onload="initMap()">
+    <!-- 地図表示領域 -->
+    <div id="myMap"></div>
+
+    <!-- キーワード検索領域 -->
+    <div id="search">
+        <!-- 検索キーワードの入力フォーム -->
+        <div class="search-input-box">
+            <div class="search-input-group">
+                <div class="search-icon" type="button"></div>
+                <input id="search-input" type="text" placeholder="Search">
+            </div>
+        </div>
+        <!-- 検索結果の表示領域 -->
+        <ul id="results-panel"></ul>
+    </div>
+</body>
+
+</html>
